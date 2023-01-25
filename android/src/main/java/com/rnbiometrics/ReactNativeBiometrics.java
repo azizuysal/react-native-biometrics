@@ -240,6 +240,7 @@ public class ReactNativeBiometrics extends ReactContextBaseJavaModule {
                         resultMap.putBoolean("success", true);
                         promise.resolve(resultMap);
                       }
+
                       @Override
                       public void onFailure(String message) {
                         prompt.cancelAuthentication();
@@ -248,6 +249,7 @@ public class ReactNativeBiometrics extends ReactContextBaseJavaModule {
                         resultMap.putString("error", message);
                         promise.resolve(resultMap);
                       }
+
                       @Override
                       public void onCancel() {
                         WritableMap resultMap = new WritableNativeMap();
@@ -255,13 +257,14 @@ public class ReactNativeBiometrics extends ReactContextBaseJavaModule {
                         resultMap.putString("error", "User cancellation");
                         promise.resolve(resultMap);
                       }
+
                       @Override
                       public void onError(String code, String error) {
                         promise.reject(code, error);
                       }
                     }));
 
-                biometricPrompt.authenticate(getPromptInfo(promptMessage, cancelButtonText, allowDeviceCredentials));
+                prompt.authenticate(getPromptInfo(promptMessage, cancelButtonText, allowDeviceCredentials));
               } catch (Exception e) {
                 promise.reject("Error displaying local biometric prompt: " + e.getMessage(),
                     "Error displaying local biometric prompt: " + e.getMessage());
