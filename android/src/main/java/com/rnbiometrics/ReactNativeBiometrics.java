@@ -36,238 +36,277 @@ import java.util.concurrent.Executors;
 
 public class ReactNativeBiometrics extends ReactContextBaseJavaModule {
 
-    protected String biometricKeyAlias = "biometric_key";
+  protected String biometricKeyAlias = "biometric_key";
 
-    public ReactNativeBiometrics(ReactApplicationContext reactContext) {
-        super(reactContext);
+  public ReactNativeBiometrics(ReactApplicationContext reactContext) {
+    super(reactContext);
+  }
+
+  @Override
+  public String getName() {
+    return "ReactNativeBiometrics";
+  }
+
+  private BiometricPrompt prompt;
+
+  @ReactMethod
+  public void isSensorAvailable(final ReadableMap params, final Promise promise) {
+    try {
+      if (isCurrentSDKMarshmallowOrLater()) {
+        boolean allowDeviceCredentials = params.getBoolean("allowDeviceCredentials");
+        ReactApplicationContext reactApplicationContext = getReactApplicationContext();
+        BiometricManager biometricManager = BiometricManager.from(reactApplicationContext);
+        int canAuthenticate = biometricManager.canAuthenticate(getAllowedAuthenticators(allowDeviceCredentials));
+
+        if (canAuthenticate == BiometricManager.BIOMETRIC_SUCCESS) {
+          WritableMap resultMap = new WritableNativeMap();
+          resultMap.putBoolean("available", true);
+          resultMap.putString("biometryType", "Biometrics");
+          promise.resolve(resultMap);
+        } else {
+          WritableMap resultMap = new WritableNativeMap();
+          resultMap.putBoolean("available", false);
+
+          switch (canAuthenticate) {
+            case BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE:
+              resultMap.putString("error", "BIOMETRIC_ERROR_NO_HARDWARE");
+              break;
+            case BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE:
+              resultMap.putString("error", "BIOMETRIC_ERROR_HW_UNAVAILABLE");
+              break;
+            case BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED:
+              resultMap.putString("error", "BIOMETRIC_ERROR_NONE_ENROLLED");
+              break;
+            case BiometricManager.BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED:
+              resultMap.putString("error", "BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED");
+              break;
+          }
+
+          promise.resolve(resultMap);
+        }
+      } else {
+        WritableMap resultMap = new WritableNativeMap();
+        resultMap.putBoolean("available", false);
+        resultMap.putString("error", "Unsupported android version");
+        promise.resolve(resultMap);
+      }
+    } catch (Exception e) {
+      promise.reject("Error detecting biometrics availability: " + e.getMessage(),
+          "Error detecting biometrics availability: " + e.getMessage());
     }
+  }
 
-    @Override
-    public String getName() {
-        return "ReactNativeBiometrics";
+  @ReactMethod
+  public void createKeys(final ReadableMap params, Promise promise) {
+    try {
+      if (isCurrentSDKMarshmallowOrLater()) {
+        deleteBiometricKey();
+        KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_RSA,
+            "AndroidKeyStore");
+        KeyGenParameterSpec keyGenParameterSpec = new KeyGenParameterSpec.Builder(biometricKeyAlias,
+            KeyProperties.PURPOSE_SIGN)
+            .setDigests(KeyProperties.DIGEST_SHA256)
+            .setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
+            .setAlgorithmParameterSpec(new RSAKeyGenParameterSpec(2048, RSAKeyGenParameterSpec.F4))
+            .setUserAuthenticationRequired(true)
+            .build();
+        keyPairGenerator.initialize(keyGenParameterSpec);
+
+        KeyPair keyPair = keyPairGenerator.generateKeyPair();
+        PublicKey publicKey = keyPair.getPublic();
+        byte[] encodedPublicKey = publicKey.getEncoded();
+        String publicKeyString = Base64.encodeToString(encodedPublicKey, Base64.DEFAULT);
+        publicKeyString = publicKeyString.replaceAll("\r", "").replaceAll("\n", "");
+
+        WritableMap resultMap = new WritableNativeMap();
+        resultMap.putString("publicKey", publicKeyString);
+        promise.resolve(resultMap);
+      } else {
+        promise.reject("Cannot generate keys on android versions below 6.0",
+            "Cannot generate keys on android versions below 6.0");
+      }
+    } catch (Exception e) {
+      promise.reject("Error generating public private keys: " + e.getMessage(), "Error generating public private keys");
     }
+  }
 
-    @ReactMethod
-    public void isSensorAvailable(final ReadableMap params, final Promise promise) {
-        try {
-            if (isCurrentSDKMarshmallowOrLater()) {
+  private boolean isCurrentSDKMarshmallowOrLater() {
+    return Build.VERSION.SDK_INT >= Build.VERSION_CODES.M;
+  }
+
+  @ReactMethod
+  public void deleteKeys(Promise promise) {
+    if (doesBiometricKeyExist()) {
+      boolean deletionSuccessful = deleteBiometricKey();
+
+      if (deletionSuccessful) {
+        WritableMap resultMap = new WritableNativeMap();
+        resultMap.putBoolean("keysDeleted", true);
+        promise.resolve(resultMap);
+      } else {
+        promise.reject("Error deleting biometric key from keystore", "Error deleting biometric key from keystore");
+      }
+    } else {
+      WritableMap resultMap = new WritableNativeMap();
+      resultMap.putBoolean("keysDeleted", false);
+      promise.resolve(resultMap);
+    }
+  }
+
+  @ReactMethod
+  public void createSignature(final ReadableMap params, final Promise promise) {
+    if (isCurrentSDKMarshmallowOrLater()) {
+      UiThreadUtil.runOnUiThread(
+          new Runnable() {
+            @Override
+            public void run() {
+              try {
+                String promptMessage = params.getString("promptMessage");
+                String payload = params.getString("payload");
+                String cancelButtonText = params.getString("cancelButtonText");
                 boolean allowDeviceCredentials = params.getBoolean("allowDeviceCredentials");
-                ReactApplicationContext reactApplicationContext = getReactApplicationContext();
-                BiometricManager biometricManager = BiometricManager.from(reactApplicationContext);
-                int canAuthenticate = biometricManager.canAuthenticate(getAllowedAuthenticators(allowDeviceCredentials));
 
-                if (canAuthenticate == BiometricManager.BIOMETRIC_SUCCESS) {
-                    WritableMap resultMap = new WritableNativeMap();
-                    resultMap.putBoolean("available", true);
-                    resultMap.putString("biometryType", "Biometrics");
-                    promise.resolve(resultMap);
-                } else {
-                    WritableMap resultMap = new WritableNativeMap();
-                    resultMap.putBoolean("available", false);
+                Signature signature = Signature.getInstance("SHA256withRSA");
+                KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
+                keyStore.load(null);
 
-                    switch (canAuthenticate) {
-                        case BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE:
-                            resultMap.putString("error", "BIOMETRIC_ERROR_NO_HARDWARE");
-                            break;
-                        case BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE:
-                            resultMap.putString("error", "BIOMETRIC_ERROR_HW_UNAVAILABLE");
-                            break;
-                        case BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED:
-                            resultMap.putString("error", "BIOMETRIC_ERROR_NONE_ENROLLED");
-                            break;
-                        case BiometricManager.BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED:
-                            resultMap.putString("error", "BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED");
-                            break; 
-                    }
+                PrivateKey privateKey = (PrivateKey) keyStore.getKey(biometricKeyAlias, null);
+                signature.initSign(privateKey);
 
-                    promise.resolve(resultMap);
-                }
-            } else {
-                WritableMap resultMap = new WritableNativeMap();
-                resultMap.putBoolean("available", false);
-                resultMap.putString("error", "Unsupported android version");
-                promise.resolve(resultMap);
+                BiometricPrompt.CryptoObject cryptoObject = new BiometricPrompt.CryptoObject(signature);
+
+                AuthenticationCallback authCallback = new CreateSignatureCallback(promise, payload);
+                FragmentActivity fragmentActivity = (FragmentActivity) getCurrentActivity();
+                Executor executor = Executors.newSingleThreadExecutor();
+                BiometricPrompt biometricPrompt = new BiometricPrompt(fragmentActivity, executor, authCallback);
+
+                biometricPrompt.authenticate(getPromptInfo(promptMessage, cancelButtonText, allowDeviceCredentials),
+                    cryptoObject);
+              } catch (Exception e) {
+                promise.reject("Error signing payload: " + e.getMessage(),
+                    "Error generating signature: " + e.getMessage());
+              }
             }
-        } catch (Exception e) {
-            promise.reject("Error detecting biometrics availability: " + e.getMessage(), "Error detecting biometrics availability: " + e.getMessage());
-        }
+          });
+    } else {
+      promise.reject("Cannot generate keys on android versions below 6.0",
+          "Cannot generate keys on android versions below 6.0");
+    }
+  }
+
+  private PromptInfo getPromptInfo(String promptMessage, String cancelButtonText, boolean allowDeviceCredentials) {
+    PromptInfo.Builder builder = new PromptInfo.Builder().setTitle(promptMessage);
+
+    builder.setAllowedAuthenticators(getAllowedAuthenticators(allowDeviceCredentials));
+
+    if (allowDeviceCredentials == false || isCurrentSDK29OrEarlier()) {
+      builder.setNegativeButtonText(cancelButtonText);
     }
 
-    @ReactMethod
-    public void createKeys(final ReadableMap params, Promise promise) {
-        try {
-            if (isCurrentSDKMarshmallowOrLater()) {
-                deleteBiometricKey();
-                KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_RSA, "AndroidKeyStore");
-                KeyGenParameterSpec keyGenParameterSpec = new KeyGenParameterSpec.Builder(biometricKeyAlias, KeyProperties.PURPOSE_SIGN)
-                        .setDigests(KeyProperties.DIGEST_SHA256)
-                        .setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
-                        .setAlgorithmParameterSpec(new RSAKeyGenParameterSpec(2048, RSAKeyGenParameterSpec.F4))
-                        .setUserAuthenticationRequired(true)
-                        .build();
-                keyPairGenerator.initialize(keyGenParameterSpec);
+    return builder.build();
+  }
 
-                KeyPair keyPair = keyPairGenerator.generateKeyPair();
-                PublicKey publicKey = keyPair.getPublic();
-                byte[] encodedPublicKey = publicKey.getEncoded();
-                String publicKeyString = Base64.encodeToString(encodedPublicKey, Base64.DEFAULT);
-                publicKeyString = publicKeyString.replaceAll("\r", "").replaceAll("\n", "");
+  private int getAllowedAuthenticators(boolean allowDeviceCredentials) {
+    if (allowDeviceCredentials && !isCurrentSDK29OrEarlier()) {
+      return BiometricManager.Authenticators.BIOMETRIC_STRONG | BiometricManager.Authenticators.DEVICE_CREDENTIAL;
+    }
+    return BiometricManager.Authenticators.BIOMETRIC_STRONG;
+  }
 
-                WritableMap resultMap = new WritableNativeMap();
-                resultMap.putString("publicKey", publicKeyString);
-                promise.resolve(resultMap);
-            } else {
-                promise.reject("Cannot generate keys on android versions below 6.0", "Cannot generate keys on android versions below 6.0");
+  private boolean isCurrentSDK29OrEarlier() {
+    return Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q;
+  }
+
+  @ReactMethod
+  public void simplePrompt(final ReadableMap params, final Promise promise) {
+    if (isCurrentSDKMarshmallowOrLater()) {
+      UiThreadUtil.runOnUiThread(
+          new Runnable() {
+            @Override
+            public void run() {
+              try {
+                String promptMessage = params.getString("promptMessage");
+                String cancelButtonText = params.getString("cancelButtonText");
+                boolean allowDeviceCredentials = params.getBoolean("allowDeviceCredentials");
+
+                FragmentActivity fragmentActivity = (FragmentActivity) getCurrentActivity();
+                Executor executor = Executors.newSingleThreadExecutor();
+
+                prompt = new BiometricPrompt(fragmentActivity, executor,
+                    new SimplePromptCallback(new SimplePromptResultCallback() {
+                      @Override
+                      public void onSuccess() {
+                        WritableMap resultMap = new WritableNativeMap();
+                        resultMap.putBoolean("success", true);
+                        promise.resolve(resultMap);
+                      }
+                      @Override
+                      public void onFailure(String message) {
+                        prompt.cancelAuthentication();
+                        WritableMap resultMap = new WritableNativeMap();
+                        resultMap.putBoolean("success", false);
+                        resultMap.putString("error", message);
+                        promise.resolve(resultMap);
+                      }
+                      @Override
+                      public void onCancel() {
+                        WritableMap resultMap = new WritableNativeMap();
+                        resultMap.putBoolean("success", false);
+                        resultMap.putString("error", "User cancellation");
+                        promise.resolve(resultMap);
+                      }
+                      @Override
+                      public void onError(String code, String error) {
+                        promise.reject(code, error);
+                      }
+                    }));
+
+                biometricPrompt.authenticate(getPromptInfo(promptMessage, cancelButtonText, allowDeviceCredentials));
+              } catch (Exception e) {
+                promise.reject("Error displaying local biometric prompt: " + e.getMessage(),
+                    "Error displaying local biometric prompt: " + e.getMessage());
+              }
             }
-        } catch (Exception e) {
-            promise.reject("Error generating public private keys: " + e.getMessage(), "Error generating public private keys");
-        }
+          });
+    } else {
+      promise.reject("Cannot display biometric prompt on android versions below 6.0",
+          "Cannot display biometric prompt on android versions below 6.0");
     }
+  }
 
-    private boolean isCurrentSDKMarshmallowOrLater() {
-        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.M;
+  @ReactMethod
+  public void biometricKeysExist(Promise promise) {
+    try {
+      boolean doesBiometricKeyExist = doesBiometricKeyExist();
+      WritableMap resultMap = new WritableNativeMap();
+      resultMap.putBoolean("keysExist", doesBiometricKeyExist);
+      promise.resolve(resultMap);
+    } catch (Exception e) {
+      promise.reject("Error checking if biometric key exists: " + e.getMessage(),
+          "Error checking if biometric key exists: " + e.getMessage());
     }
+  }
 
-    @ReactMethod
-    public void deleteKeys(Promise promise) {
-        if (doesBiometricKeyExist()) {
-            boolean deletionSuccessful = deleteBiometricKey();
+  protected boolean doesBiometricKeyExist() {
+    try {
+      KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
+      keyStore.load(null);
 
-            if (deletionSuccessful) {
-                WritableMap resultMap = new WritableNativeMap();
-                resultMap.putBoolean("keysDeleted", true);
-                promise.resolve(resultMap);
-            } else {
-                promise.reject("Error deleting biometric key from keystore", "Error deleting biometric key from keystore");
-            }
-        } else {
-            WritableMap resultMap = new WritableNativeMap();
-            resultMap.putBoolean("keysDeleted", false);
-            promise.resolve(resultMap);
-        }
+      return keyStore.containsAlias(biometricKeyAlias);
+    } catch (Exception e) {
+      return false;
     }
+  }
 
-    @ReactMethod
-    public void createSignature(final ReadableMap params, final Promise promise) {
-        if (isCurrentSDKMarshmallowOrLater()) {
-            UiThreadUtil.runOnUiThread(
-                    new Runnable() {
-                        @Override
-                        public void run() {
-                            try {
-                                String promptMessage = params.getString("promptMessage");
-                                String payload = params.getString("payload");
-                                String cancelButtonText = params.getString("cancelButtonText");
-                                boolean allowDeviceCredentials = params.getBoolean("allowDeviceCredentials");
+  protected boolean deleteBiometricKey() {
+    try {
+      KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
+      keyStore.load(null);
 
-                                Signature signature = Signature.getInstance("SHA256withRSA");
-                                KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
-                                keyStore.load(null);
-
-                                PrivateKey privateKey = (PrivateKey) keyStore.getKey(biometricKeyAlias, null);
-                                signature.initSign(privateKey);
-
-                                BiometricPrompt.CryptoObject cryptoObject = new BiometricPrompt.CryptoObject(signature);
-
-                                AuthenticationCallback authCallback = new CreateSignatureCallback(promise, payload);
-                                FragmentActivity fragmentActivity = (FragmentActivity) getCurrentActivity();
-                                Executor executor = Executors.newSingleThreadExecutor();
-                                BiometricPrompt biometricPrompt = new BiometricPrompt(fragmentActivity, executor, authCallback);
-
-                                biometricPrompt.authenticate(getPromptInfo(promptMessage, cancelButtonText, allowDeviceCredentials), cryptoObject);
-                            } catch (Exception e) {
-                                promise.reject("Error signing payload: " + e.getMessage(), "Error generating signature: " + e.getMessage());
-                            }
-                        }
-                    });
-        } else {
-            promise.reject("Cannot generate keys on android versions below 6.0", "Cannot generate keys on android versions below 6.0");
-        }
+      keyStore.deleteEntry(biometricKeyAlias);
+      return true;
+    } catch (Exception e) {
+      return false;
     }
-
-    private PromptInfo getPromptInfo(String promptMessage, String cancelButtonText, boolean allowDeviceCredentials) {
-        PromptInfo.Builder builder = new PromptInfo.Builder().setTitle(promptMessage);
-
-        builder.setAllowedAuthenticators(getAllowedAuthenticators(allowDeviceCredentials));
-
-        if (allowDeviceCredentials == false || isCurrentSDK29OrEarlier()) {
-            builder.setNegativeButtonText(cancelButtonText);
-        }
-
-        return builder.build();
-    }
-
-    private int getAllowedAuthenticators(boolean allowDeviceCredentials) {
-        if (allowDeviceCredentials && !isCurrentSDK29OrEarlier()) {
-            return BiometricManager.Authenticators.BIOMETRIC_STRONG | BiometricManager.Authenticators.DEVICE_CREDENTIAL;
-        }
-        return BiometricManager.Authenticators.BIOMETRIC_STRONG;
-    }
-
-    private boolean isCurrentSDK29OrEarlier() {
-        return Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q;
-    }
-
-    @ReactMethod
-    public void simplePrompt(final ReadableMap params, final Promise promise) {
-        if (isCurrentSDKMarshmallowOrLater()) {
-            UiThreadUtil.runOnUiThread(
-                    new Runnable() {
-                        @Override
-                        public void run() {
-                            try {
-                                String promptMessage = params.getString("promptMessage");
-                                String cancelButtonText = params.getString("cancelButtonText");
-                                boolean allowDeviceCredentials = params.getBoolean("allowDeviceCredentials");
-
-                                AuthenticationCallback authCallback = new SimplePromptCallback(promise);
-                                FragmentActivity fragmentActivity = (FragmentActivity) getCurrentActivity();
-                                Executor executor = Executors.newSingleThreadExecutor();
-                                BiometricPrompt biometricPrompt = new BiometricPrompt(fragmentActivity, executor, authCallback);
-
-                                biometricPrompt.authenticate(getPromptInfo(promptMessage, cancelButtonText, allowDeviceCredentials));
-                            } catch (Exception e) {
-                                promise.reject("Error displaying local biometric prompt: " + e.getMessage(), "Error displaying local biometric prompt: " + e.getMessage());
-                            }
-                        }
-                    });
-        } else {
-            promise.reject("Cannot display biometric prompt on android versions below 6.0", "Cannot display biometric prompt on android versions below 6.0");
-        }
-    }
-
-    @ReactMethod
-    public void biometricKeysExist(Promise promise) {
-        try {
-            boolean doesBiometricKeyExist = doesBiometricKeyExist();
-            WritableMap resultMap = new WritableNativeMap();
-            resultMap.putBoolean("keysExist", doesBiometricKeyExist);
-            promise.resolve(resultMap);
-        } catch (Exception e) {
-            promise.reject("Error checking if biometric key exists: " + e.getMessage(), "Error checking if biometric key exists: " + e.getMessage());
-        }
-    }
-
-    protected boolean doesBiometricKeyExist() {
-        try {
-            KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
-            keyStore.load(null);
-
-            return keyStore.containsAlias(biometricKeyAlias);
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    protected boolean deleteBiometricKey() {
-        try {
-            KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
-            keyStore.load(null);
-
-            keyStore.deleteEntry(biometricKeyAlias);
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
-    }
+  }
 }
